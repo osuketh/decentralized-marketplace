@@ -1,6 +1,7 @@
 pragma solidity 0.4.24;
 
-import "./lib/SafeMath.sol";
+import "./zep/SafeMath.sol";
+import "./MPToken.sol";
 
 contract marketplace {
     using SafeMath for uint;
@@ -60,11 +61,16 @@ contract marketplace {
     // それぞれのitemIndexに対するそれぞれの購入情報
     mapping(uint => Purchase[]) public purchases; 
 
-    mapping(address => uint) public balances;
+    // コントラクトが保持しているアドレスごとのETH
+    mapping(address => uint) public ethBalances;
+
+    // デポジットしているMPToken
+    mapping(address => uint) public escrowBalances;
 
     // コントラクトのオーナー
     address public owner;
 
+    MPToken public token;
 
     // 適切なステージかチェック
     modifier atStage(Stages _stage, uint _itemIndex, uint _purchaseIndex) {
@@ -85,17 +91,19 @@ contract marketplace {
     }
 
 
-    constructor()
+    constructor(MPToken _token)
         public
     {
+        require(_token != address(0));
         owner = msg.sender;
+        token = _token;
     }
 
     /**
      * @dev 売り手がitemをマーケットに登録する
      * @param _ipfsHash メタデータ
      * @param _price アイテムの価格
-     * @param _unitsAvailable 販売する個数     
+     * @param _unitsAvailable 販売する個数         
      * @return 商品数
      */
     function registerItem(
@@ -117,6 +125,11 @@ contract marketplace {
         items.push(item);
         
         emit NewItem(items.length.sub(1));
+
+        uint amount = _price; // デポジットすべきMPTokenはアイテムの価格と同じ
+        escrowBalances[msg.sender] = escrowBalances[msg.sender].add(amount); 
+        require(token.transferFrom(msg.sender, this, amount));  
+
         return items.length;
     }
 
@@ -162,8 +175,8 @@ contract marketplace {
         emit BuyItem(_itemIndex, _units, _relayerAddr, purchases[_itemIndex].length.sub(1));
         emit PurchaseChange(purchase.stage);
 
-        balances[item.seller] = balances[item.seller].add(valueToSeller);
-        balances[_relayerAddr] = balances[_relayerAddr].add(msg.value.sub(valueToSeller));                
+        ethBalances[item.seller] = ethBalances[item.seller].add(valueToSeller);
+        ethBalances[_relayerAddr] = ethBalances[_relayerAddr].add(msg.value.sub(valueToSeller));                
 
         return purchases[_itemIndex].length;
     }
@@ -182,6 +195,7 @@ contract marketplace {
 
         purchases[_itemIndex][_purchaseIndex].stage = Stages.SELLER_PENDING;
 
+        token.transferFrom(this, items[_itemIndex].seller, items[_itemIndex].price); // 買い手が評価すると、売り手がデポジットしていたMPTが返金
         emit PurchaseChange(Stages.SELLER_PENDING);
         emit PurchaseReview(msg.sender, items[_itemIndex].seller, Roles.SELLER, _rating, _ipfsHash);
     }
@@ -204,6 +218,7 @@ contract marketplace {
     // TODO
     function openDispute(uint _itemIndex, uint _purchaseIndex)
         public
+        isBuyer(_itemIndex, _purchaseIndex)
     {
         
     }
@@ -245,9 +260,9 @@ contract marketplace {
     function withdraw()
         public
     {
-        require(balances[msg.sender] != 0);
-        uint amountToWithdraw = balances[msg.sender]; // Reentrancyを避ける
-        balances[msg.sender] = 0;
+        require(ethBalances[msg.sender] != 0);
+        uint amountToWithdraw = ethBalances[msg.sender]; // Reentrancyを避ける
+        ethBalances[msg.sender] = 0;
         msg.sender.transfer(amountToWithdraw);
     } 
 
@@ -256,8 +271,8 @@ contract marketplace {
         view
         returns (uint)
     {
-        return balances[msg.sender];
-    }
+        return ethBalances[msg.sender];
+    }    
 
     function getItemsLength()
         public
@@ -266,5 +281,6 @@ contract marketplace {
     {
         return items.length;
     }
+
 
 }
